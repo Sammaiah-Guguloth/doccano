@@ -4,7 +4,6 @@
 ARG PYTHON_VERSION="3.11.10-slim-bullseye"
 FROM python:${PYTHON_VERSION} AS backend-builder
 
-# Set workdir
 WORKDIR /tmp
 
 # Install system dependencies
@@ -22,16 +21,17 @@ RUN apt-get update \
 # Copy project dependency files
 COPY backend/pyproject.toml backend/poetry.lock /tmp/
 
-# Use bash with pipefail
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Install Poetry via official installer, export requirements, install them
+# Install Poetry and dependencies
 RUN curl -sSL https://install.python-poetry.org | python3 - \
  && export PATH="$HOME/.local/bin:$PATH" \
  && poetry --version \
- && poetry export --without-hashes -o /requirements.txt \
- && echo "psycopg2-binary==2.8.6" >> /requirements.txt \
- && pip install --no-cache-dir -r /requirements.txt
+ # Disable virtualenv creation to install directly into system site-packages
+ && poetry config virtualenvs.create false \
+ && poetry install --no-interaction --no-ansi \
+ # Ensure psycopg2-binary is installed
+ && pip install --no-cache-dir psycopg2-binary==2.8.6
 
 # =======================
 # Runtime stage
@@ -72,7 +72,6 @@ RUN mkdir -p \
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PATH="/root/.local/bin:$PATH"
 
 # Switch to non-root user
 USER doccano:doccano
