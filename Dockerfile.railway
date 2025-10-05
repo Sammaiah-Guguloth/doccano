@@ -1,0 +1,91 @@
+ARG PYTHON_VERSION="3.8.13-slim-bullseye"
+ARG NODE_VERSION="18.20-bullseye-slim"
+
+# Frontend build stage
+FROM node:${NODE_VERSION} AS frontend-builder
+
+COPY frontend/ /frontend/
+WORKDIR /frontend
+ENV PUBLIC_PATH="/static/_nuxt/"
+
+# Install dependencies and build frontend
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git python3 make g++ ca-certificates \
+ && git config --global url."https://github.com/".insteadOf git://github.com/ \
+ && yarn install --network-timeout 1000000 \
+ && yarn build \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Backend build stage
+FROM python:${PYTHON_VERSION} AS backend-builder
+
+# Install system dependencies
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    libpq-dev=13.* \
+    unixodbc-dev=2.* \
+    g++=4:* \
+    libssl-dev=1.* \
+    curl \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+COPY backend/pyproject.toml backend/poetry.lock /tmp/
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Install Python dependencies
+RUN pip install -U --no-cache-dir pip==22.2.2 \
+ && curl -sSL https://install.python-poetry.org | python - \
+ && export PATH="/root/.local/bin:$PATH" \
+ && poetry export --without-hashes -o /requirements.txt \
+ && echo "psycopg2-binary==2.8.6" >> /requirements.txt \
+ && pip install --no-cache-dir -r /requirements.txt
+
+# Runtime stage
+FROM python:${PYTHON_VERSION} AS runtime
+
+# Install runtime dependencies
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    libpq-dev=13.* \
+    unixodbc-dev=2.* \
+    libssl-dev=1.* \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Create user
+RUN useradd -ms /bin/sh doccano
+
+# Copy Python packages from builder
+COPY --from=backend-builder /usr/local/lib/python3.8/site-packages /usr/local/lib/python3.8/site-packages
+COPY --from=backend-builder /usr/local/bin/celery /usr/local/bin/celery
+COPY --from=backend-builder /usr/local/bin/gunicorn /usr/local/bin/gunicorn
+
+# Copy application code
+COPY --chown=doccano:doccano . /doccano
+WORKDIR /doccano/backend
+
+# Copy frontend build
+COPY --from=frontend-builder /frontend/dist /doccano/backend/client/dist
+
+# Collect static files
+RUN python manage.py collectstatic --noinput \
+ && chown -R doccano:doccano .
+
+# Environment variables for Railway
+ENV DEBUG="False"
+ENV DJANGO_SETTINGS_MODULE="config.settings.production"
+ENV PORT="8000"
+ENV WORKERS="2"
+ENV CELERY_WORKERS="2"
+
+# Railway will provide these automatically
+ENV RAILWAY_ENVIRONMENT="production"
+
+USER doccano
+EXPOSE ${PORT}
+
+# Use Railway-optimized startup script
+CMD ["/doccano/tools/railway.sh"]
