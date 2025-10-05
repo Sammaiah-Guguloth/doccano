@@ -1,8 +1,11 @@
 # =======================
 # Builder stage
 # =======================
-ARG PYTHON_VERSION="3.8.13-slim-bullseye"
+ARG PYTHON_VERSION="3.11.10-slim-bullseye"
 FROM python:${PYTHON_VERSION} AS backend-builder
+
+# Set workdir
+WORKDIR /tmp
 
 # Install system dependencies
 RUN apt-get update \
@@ -16,16 +19,14 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /tmp
-
 # Copy project dependency files
 COPY backend/pyproject.toml backend/poetry.lock /tmp/
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Install pip, Poetry via pip (reliable for slim images), export requirements, install them
-RUN pip install --upgrade pip==22.2.2 setuptools wheel \
- && pip install poetry==2.2.1 \
+# Install pip, Poetry via pip, export requirements, install them
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install "poetry>=2.2.1" \
  && poetry export --without-hashes -o /requirements.txt \
  && echo "psycopg2-binary==2.8.6" >> /requirements.txt \
  && pip install --no-cache-dir -r /requirements.txt
@@ -48,10 +49,10 @@ RUN apt-get update \
 
 # Create non-root user
 RUN groupadd -g 61000 doccano \
-  && useradd -g 61000 -l -M -s /bin/false -u 61000 doccano
+ && useradd -g doccano -u 61000 -M -s /bin/false doccano
 
 # Copy installed Python packages and binaries from builder
-COPY --from=backend-builder /usr/local/lib/python3.8/site-packages /usr/local/lib/python3.8/site-packages
+COPY --from=backend-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=backend-builder /usr/local/bin/celery /usr/local/bin/celery
 COPY --from=backend-builder /usr/local/bin/gunicorn /usr/local/bin/gunicorn
 
@@ -60,11 +61,12 @@ COPY --chown=doccano:doccano tools/ /opt/bin/
 COPY --chown=doccano:doccano backend/ /backend/
 
 # Prepare directories
-RUN mkdir -p /backend/staticfiles \
-  && mkdir -p /backend/client/dist/static \
-  && mkdir -p /backend/media \
-  && mkdir -p /backend/filepond-temp-uploads \
-  && chown -R doccano:doccano /backend/
+RUN mkdir -p \
+      /backend/staticfiles \
+      /backend/client/dist/static \
+      /backend/media \
+      /backend/filepond-temp-uploads \
+ && chown -R doccano:doccano /backend/
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -77,4 +79,4 @@ USER doccano:doccano
 VOLUME /backend/staticfiles
 
 # Entry point
-ENTRYPOINT [ "/opt/bin/prod-django.sh" ]
+ENTRYPOINT ["/opt/bin/prod-django.sh"]
