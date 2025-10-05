@@ -1,83 +1,58 @@
-# =======================
-# Builder stage
-# =======================
-ARG PYTHON_VERSION="3.11.10-slim-bullseye"
+ARG PYTHON_VERSION="3.8.13-slim-bullseye"
 FROM python:${PYTHON_VERSION} AS backend-builder
 
-WORKDIR /tmp
-
-# Install system dependencies
+# hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-    netcat \
-    libpq-dev \
-    unixodbc-dev \
-    g++ \
-    libssl-dev \
+    netcat=1.* \
+    libpq-dev=13.* \
+    unixodbc-dev=2.* \
+    g++=4:* \
+    libssl-dev=1.* \
     curl \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy project dependency files
+WORKDIR /tmp
 COPY backend/pyproject.toml backend/poetry.lock /tmp/
-
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Install Poetry and dependencies
-RUN curl -sSL https://install.python-poetry.org | python3 - \
- && export PATH="$HOME/.local/bin:$PATH" \
- && poetry --version \
- # Disable virtualenv creation to install directly into system site-packages
- && poetry config virtualenvs.create false \
- && poetry install --no-interaction --no-ansi \
- # Ensure psycopg2-binary is installed
- && pip install --no-cache-dir psycopg2-binary==2.8.6
+RUN pip install -U --no-cache-dir pip==22.2.2 \
+ && curl -sSL https://install.python-poetry.org | python - \
+ && export PATH="/root/.local/bin:$PATH" \
+ && poetry export --without-hashes -o /requirements.txt \
+ && echo "psycopg2-binary==2.8.6" >> /requirements.txt \
+ && pip install --no-cache-dir -r /requirements.txt
 
-# =======================
-# Runtime stage
-# =======================
 FROM python:${PYTHON_VERSION} AS runtime
 
 WORKDIR /backend
 
-# Install runtime dependencies
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-    libpq-dev \
-    unixodbc-dev \
-    libssl-dev \
+    libpq-dev=13.* \
+    unixodbc-dev=2.* \
+    libssl-dev=1.* \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
 RUN groupadd -g 61000 doccano \
- && useradd -g doccano -u 61000 -M -s /bin/false doccano
+  && useradd -g 61000 -l -M -s /bin/false -u 61000 doccano
 
-# Copy installed Python packages from builder
-COPY --from=backend-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=backend-builder /usr/local/bin /usr/local/bin
-
-# Copy project code and scripts
+COPY --from=backend-builder /usr/local/lib/python3.8/site-packages /usr/local/lib/python3.8/site-packages
+COPY --from=backend-builder /usr/local/bin/celery /usr/local/bin/celery
+COPY --from=backend-builder /usr/local/bin/gunicorn /usr/local/bin/gunicorn
 COPY --chown=doccano:doccano tools/ /opt/bin/
 COPY --chown=doccano:doccano backend/ /backend/
+RUN mkdir -p /backend/staticfiles \
+  && mkdir -p /backend/client/dist/static \
+  && mkdir -p /backend/media \
+  && mkdir -p /backend/filepond-temp-uploads \
+  && chown -R doccano:doccano /backend/
 
-# Prepare directories
-RUN mkdir -p \
-      /backend/staticfiles \
-      /backend/client/dist/static \
-      /backend/media \
-      /backend/filepond-temp-uploads \
- && chown -R doccano:doccano /backend/
-
-# Environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Switch to non-root user
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 USER doccano:doccano
-
-# Volume for static files
 VOLUME /backend/staticfiles
 
-# Entry point
-ENTRYPOINT ["/opt/bin/prod-django.sh"]
+ENTRYPOINT [ "/opt/bin/prod-django.sh" ]
